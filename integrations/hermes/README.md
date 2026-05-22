@@ -65,13 +65,31 @@ hermes profile create agency --clone
 
 ## Manual external_dirs
 
-If the installer could not update your config, add:
+If the installer could not update your config, add **under the existing `skills:` section** (not at the end of the file):
 
 ```yaml
 skills:
   external_dirs:
     - ~/.hermes/agency-agents
 ```
+
+## Fix broken config.yaml
+
+If `hermes` reports a YAML parse error and you see a stray line at the **end** of
+`config.yaml`:
+
+```yaml
+    - ~/.hermes/agency-agents
+```
+
+after comments or `platform_toolsets`, **delete that line**. It was appended outside
+`skills.external_dirs` by an older installer and breaks the whole config.
+
+Then add the entry in the correct place:
+
+1. Find `skills:` → `external_dirs:` in the file.
+2. Add `    - ~/.hermes/agency-agents` as a list item under `external_dirs:`.
+3. Run `hermes doctor` or `hermes skills list` to confirm the config parses.
 
 ## Regenerate
 

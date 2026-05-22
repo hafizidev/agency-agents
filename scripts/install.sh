@@ -444,14 +444,96 @@ install_openclaw() {
   fi
 }
 
+# True when agency-agents is listed under skills.external_dirs (not a stray EOF line).
+hermes_external_dir_configured() {
+  local config="$1"
+  [[ -f "$config" ]] || return 1
+  awk '
+    BEGIN { in_ext = 0; found = 0 }
+    /^skills:/ { in_skills = 1; next }
+    in_skills && /^[A-Za-z0-9_.-]+:/ && $0 !~ /^  / { in_skills = 0; in_ext = 0 }
+    in_skills && /^  external_dirs:/ { in_ext = 1; next }
+    in_ext && /^    -.*agency-agents/ { found = 1; exit }
+    in_ext && /^  [A-Za-z0-9_.-]+:/ { in_ext = 0 }
+    END { exit(found ? 0 : 1) }
+  ' "$config" 2>/dev/null
+}
+
+# Insert external_dirs entry under skills: without appending to EOF (avoids breaking YAML).
+hermes_insert_external_dir() {
+  local config="$1"
+  local entry="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v entry="$entry" '
+    BEGIN { in_skills = 0; in_ext = 0; inserted = 0; has_ext = 0 }
+    /^skills:/ { in_skills = 1; print; next }
+    in_skills && /^[A-Za-z0-9_.-]+:/ && $0 !~ /^  / {
+      if (!has_ext && !inserted) {
+        print "  external_dirs:"
+        print "    - " entry
+        inserted = 1
+      }
+      in_skills = 0
+      in_ext = 0
+      print
+      next
+    }
+    in_skills && /^  external_dirs:/ {
+      has_ext = 1
+      in_ext = 1
+      print
+      next
+    }
+    in_ext && /^  [A-Za-z0-9_.-]+:/ {
+      if (!inserted) {
+        print "    - " entry
+        inserted = 1
+      }
+      in_ext = 0
+      print
+      next
+    }
+    in_ext && /^[^[:space:]]/ {
+      if (!inserted) {
+        print "    - " entry
+        inserted = 1
+      }
+      in_ext = 0
+      print
+      next
+    }
+    { print }
+    END {
+      if (in_skills && !has_ext && !inserted) {
+        print "  external_dirs:"
+        print "    - " entry
+        inserted = 1
+      }
+      if (in_ext && !inserted) {
+        print "    - " entry
+      }
+    }
+  ' "$config" > "$tmp" && mv "$tmp" "$config"
+}
+
 ensure_hermes_external_dir() {
   local config="${HOME}/.hermes/config.yaml"
+  local entry='~/.hermes/agency-agents'
+  local backup
 
-  if [[ -f "$config" ]] && grep -qF 'agency-agents' "$config" 2>/dev/null; then
+  mkdir -p "${HOME}/.hermes"
+
+  if [[ -f "$config" ]] && hermes_external_dir_configured "$config"; then
     return 0
   fi
 
-  mkdir -p "${HOME}/.hermes"
+  if [[ -f "$config" ]] && grep -qF 'agency-agents' "$config" 2>/dev/null; then
+    err "Hermes: $config mentions agency-agents but not under skills.external_dirs."
+    err "Hermes: remove any stray \"    - ~/.hermes/agency-agents\" line at the END of the file,"
+    err "Hermes: then add it under skills -> external_dirs (see integrations/hermes/README.md)."
+    return 1
+  fi
 
   if [[ ! -f "$config" ]]; then
     cat > "$config" <<'EOF'
@@ -463,20 +545,27 @@ EOF
     return 0
   fi
 
-  if grep -q '^skills:' "$config" 2>/dev/null && grep -q 'external_dirs:' "$config" 2>/dev/null; then
-    printf '    - ~/.hermes/agency-agents\n' >> "$config"
-    ok "Hermes: appended ~/.hermes/agency-agents to skills.external_dirs (review config.yaml)"
-    return 0
-  fi
-
   if ! grep -q '^skills:' "$config" 2>/dev/null; then
-    printf '\nskills:\n  external_dirs:\n    - ~/.hermes/agency-agents\n' >> "$config"
-    ok "Hermes: appended skills.external_dirs to config.yaml"
-    return 0
+    warn "Hermes: no skills: section in $config — add manually (do not paste at EOF):"
+    warn "  skills:"
+    warn "    external_dirs:"
+    warn "      - ~/.hermes/agency-agents"
+    return 1
   fi
 
-  warn "Hermes: add under skills.external_dirs in $config:"
+  backup="${config}.bak.agency-agents.$$"
+  cp "$config" "$backup"
+  if hermes_insert_external_dir "$config" "$entry"; then
+    if hermes_external_dir_configured "$config"; then
+      ok "Hermes: added $entry under skills.external_dirs (backup: $backup)"
+      return 0
+    fi
+  fi
+  mv "$backup" "$config"
+  err "Hermes: failed to update $config safely. Backup kept at $backup"
+  warn "Hermes: add manually under skills.external_dirs:"
   warn "    - ~/.hermes/agency-agents"
+  return 1
 }
 
 install_hermes() {
@@ -500,7 +589,9 @@ install_hermes() {
     err "integrations/hermes contains no generated workspaces. Run ./scripts/convert.sh --tool hermes first."
     return 1
   fi
-  ensure_hermes_external_dir
+  if ! ensure_hermes_external_dir; then
+    warn "Hermes: workspaces installed to $dest but config.yaml was not updated."
+  fi
   ok "Hermes: $count workspaces -> $dest"
   if command -v hermes >/dev/null 2>&1; then
     warn "Hermes: run 'hermes skills list' to verify; use /skill-name or --toolsets skills in chat"
