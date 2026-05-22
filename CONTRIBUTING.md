@@ -154,7 +154,7 @@ Advanced techniques and approaches the agent masters
 ### Agent Structure
 
 Agent files are organized into two semantic groups that map to
-OpenClaw's workspace format and help other tools parse your agent:
+OpenClaw and Hermes workspace formats and help other tools parse your agent:
 
 #### Persona (who the agent is)
 - **Identity & Memory** — role, personality, background

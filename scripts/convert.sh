@@ -17,6 +17,7 @@
 #   aider        — Single CONVENTIONS.md for Aider
 #   windsurf     — Single .windsurfrules for Windsurf
 #   openclaw     — OpenClaw workspaces (integrations/openclaw/<agent>/SOUL.md)
+#   hermes       — Hermes workspaces (integrations/hermes/<agent>/SOUL.md + SKILL.md)
 #   qwen         — Qwen Code SubAgent files (~/.qwen/agents/*.md)
 #   kimi         — Kimi Code CLI agent files (~/.config/kimi/agents/)
 #   codex        — Codex custom agent TOML files (~/.codex/agents/*.toml)
@@ -118,6 +119,20 @@ toml_escape_string() {
     s/\x08/\\b/g;
     s/([\x00-\x07\x0B\x0E-\x1F\x7F])/sprintf("\\u%04X", ord($1))/ge;
   '
+}
+
+# Emit a YAML frontmatter description field safe for colons, quotes, and newlines.
+# Uses a literal block scalar (|-), matching Hermes SKILL.md frontmatter expectations.
+yaml_frontmatter_description() {
+  local desc="$1"
+  printf 'description: |-\n'
+  if [[ -n "$desc" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '  %s\n' "$line"
+    done <<< "$desc"
+  else
+    printf '  \n'
+  fi
 }
 
 # --- Per-tool converters ---
@@ -286,33 +301,28 @@ ${body}
 HEREDOC
 }
 
-convert_openclaw() {
+# Split agent body into SOUL.md / AGENTS.md / IDENTITY.md under outdir (OpenClaw, Hermes).
+write_agent_workspace() {
   local file="$1"
-  local name description slug outdir body
+  local outdir="$2"
+  local name description body
   local soul_content="" agents_content=""
 
   name="$(get_field "name" "$file")"
   description="$(get_field "description" "$file")"
-  slug="$(slugify "$name")"
   body="$(get_body "$file")"
 
-  outdir="$OUT_DIR/openclaw/$slug"
   mkdir -p "$outdir"
 
-  # Split body sections into SOUL.md (persona) vs AGENTS.md (operations)
-  # by matching ## header keywords. Unmatched sections go to AGENTS.md.
-  #
   # SOUL keywords: identity, learning & memory, communication, style,
   #   critical rules, rules you must follow
   # AGENTS keywords: everything else (mission, deliverables, workflow, etc.)
 
-  local current_target="agents"  # default bucket
+  local current_target="agents"
   local current_section=""
 
   while IFS= read -r line; do
-    # Detect ## headers (with or without emoji prefixes)
     if [[ "$line" =~ ^##[[:space:]] ]]; then
-      # Flush previous section
       if [[ -n "$current_section" ]]; then
         if [[ "$current_target" == "soul" ]]; then
           soul_content+="$current_section"
@@ -322,7 +332,6 @@ convert_openclaw() {
       fi
       current_section=""
 
-      # Classify this header by keyword (case-insensitive)
       local header_lower
       header_lower="$(echo "$line" | tr '[:upper:]' '[:lower:]')"
 
@@ -341,7 +350,6 @@ convert_openclaw() {
     current_section+="$line"$'\n'
   done <<< "$body"
 
-  # Flush final section
   if [[ -n "$current_section" ]]; then
     if [[ "$current_target" == "soul" ]]; then
       soul_content+="$current_section"
@@ -350,17 +358,14 @@ convert_openclaw() {
     fi
   fi
 
-  # Write SOUL.md — persona, tone, boundaries
   cat > "$outdir/SOUL.md" <<HEREDOC
 ${soul_content}
 HEREDOC
 
-  # Write AGENTS.md — mission, deliverables, workflow
   cat > "$outdir/AGENTS.md" <<HEREDOC
 ${agents_content}
 HEREDOC
 
-  # Write IDENTITY.md — emoji + name + vibe from frontmatter, fallback to description
   local emoji vibe
   emoji="$(get_field "emoji" "$file")"
   vibe="$(get_field "vibe" "$file")"
@@ -376,6 +381,67 @@ HEREDOC
 ${description}
 HEREDOC
   fi
+}
+
+agent_category_from_file() {
+  local file="$1"
+  local rel="${file#"$REPO_ROOT"/}"
+  rel="${rel#/}"
+  printf '%s\n' "${rel%%/*}"
+}
+
+convert_openclaw() {
+  local file="$1"
+  local slug
+
+  slug="$(slugify "$(get_field "name" "$file")")"
+  write_agent_workspace "$file" "$OUT_DIR/openclaw/$slug"
+}
+
+convert_hermes() {
+  local file="$1"
+  local name description slug outdir category desc_block
+
+  name="$(get_field "name" "$file")"
+  description="$(get_field "description" "$file")"
+  slug="$(slugify "$name")"
+  category="$(agent_category_from_file "$file")"
+  outdir="$OUT_DIR/hermes/$slug"
+  desc_block="$(yaml_frontmatter_description "$description")"
+
+  write_agent_workspace "$file" "$outdir"
+
+  cat > "$outdir/SKILL.md" <<HEREDOC
+---
+name: ${slug}
+${desc_block}
+version: 1.0.0
+license: MIT
+metadata:
+  hermes:
+    tags: [agency, ${category}]
+    category: agency
+---
+
+# ${name}
+
+## When to Use
+
+Activate this Agency specialist when the task matches: ${description}
+
+## Procedure
+
+1. Read and adopt the persona in \${HERMES_SKILL_DIR}/SOUL.md.
+2. Follow operational instructions in \${HERMES_SKILL_DIR}/AGENTS.md.
+3. Use \${HERMES_SKILL_DIR}/IDENTITY.md for agent identity context.
+4. Execute the user's task using the loaded persona, rules, and deliverables.
+
+Use \`read_file\` or \`terminal\` to load the bundled context files before acting if they are not already in context.
+
+## Verification
+
+Confirm the response reflects the specialist's mission, critical rules, and success metrics from the bundled files.
+HEREDOC
 }
 
 convert_qwen() {
@@ -543,6 +609,7 @@ run_conversions() {
         opencode)    convert_opencode    "$file" ;;
         cursor)      convert_cursor      "$file" ;;
         openclaw)    convert_openclaw    "$file" ;;
+        hermes)      convert_hermes      "$file" ;;
         qwen)        convert_qwen        "$file" ;;
         kimi)        convert_kimi        "$file" ;;
         aider)       accumulate_aider    "$file" ;;
@@ -575,7 +642,7 @@ main() {
     esac
   done
 
-  local valid_tools=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "qwen" "kimi" "codex" "all")
+  local valid_tools=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "hermes" "qwen" "kimi" "codex" "all")
   local valid=false
   for t in "${valid_tools[@]}"; do [[ "$t" == "$tool" ]] && valid=true && break; done
   if ! $valid; then
@@ -594,7 +661,7 @@ main() {
 
   local tools_to_run=()
   if [[ "$tool" == "all" ]]; then
-    tools_to_run=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "qwen" "kimi" "codex")
+    tools_to_run=("antigravity" "gemini-cli" "opencode" "cursor" "aider" "windsurf" "openclaw" "hermes" "qwen" "kimi" "codex")
   else
     tools_to_run=("$tool")
   fi
@@ -605,7 +672,7 @@ main() {
 
   if $use_parallel && [[ "$tool" == "all" ]]; then
     # Tools that write to separate dirs can run in parallel; buffer output so each tool's output stays together
-    local parallel_tools=(antigravity gemini-cli opencode cursor openclaw qwen codex)
+    local parallel_tools=(antigravity gemini-cli opencode cursor openclaw hermes qwen codex)
     local parallel_out_dir
     parallel_out_dir="$(mktemp -d)"
     info "Converting: ${#parallel_tools[@]}/${n_tools} tools in parallel (output buffered per tool)..."
