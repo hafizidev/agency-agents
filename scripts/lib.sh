@@ -153,8 +153,11 @@ read_key() {
   esac
 }
 
-# draw_frame <buffer> — home cursor and paint a pre-composed frame, clearing
-# trailing lines (flicker-free: one write, then clear-to-end-of-screen).
+# draw_frame <buffer> — home cursor and paint a pre-composed frame.
+# Flicker-free: erase-to-end-of-line (\033[K) on every line so a shorter new
+# line never leaves the previous frame's tail behind, then erase-to-end-of-
+# screen (\033[0J) to drop any leftover lines below the frame.
 draw_frame() {
-  printf '\033[H%s\033[0J' "$1"
+  local buf="${1//$'\n'/$'\033[K'$'\n'}"
+  printf '\033[H%s\033[K\033[0J' "$buf"
 }
