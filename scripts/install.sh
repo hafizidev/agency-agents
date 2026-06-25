@@ -21,6 +21,7 @@
 #   aider        -- Copy CONVENTIONS.md to current directory
 #   windsurf     -- Copy .windsurfrules to current directory
 #   openclaw     -- Copy workspaces to ~/.openclaw/agency-agents/
+#   hermes       -- Copy workspaces to ~/.hermes/agency-agents/ + skills.external_dirs
 #   qwen         -- Copy SubAgents to ~/.qwen/agents/ (user-wide) or .qwen/agents/ (project)
 #   codex        -- Copy custom agent TOML files to ~/.codex/agents/
 #   osaurus      -- Copy skills to ~/.osaurus/skills/
@@ -123,11 +124,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INTEGRATIONS="$REPO_ROOT/integrations"
 
+ALL_TOOLS=(claude-code copilot antigravity gemini-cli opencode openclaw hermes cursor aider windsurf qwen kimi codex osaurus)
 # Shared helpers (get_field, agent_slug, slugify, incr, ANSI + TUI primitives)
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-ALL_TOOLS=(claude-code copilot antigravity gemini-cli opencode openclaw cursor aider windsurf qwen kimi codex osaurus)
+ALL_TOOLS=(claude-code copilot antigravity gemini-cli opencode openclaw hermes cursor aider windsurf qwen kimi codex osaurus)
 
 # Directories scanned for installable agents. Intentionally includes strategy/
 # (its frontmatter-less NEXUS docs are filtered out by is_agent_file at scan time);
@@ -367,6 +369,7 @@ detect_cursor()       { command -v cursor >/dev/null 2>&1 || [[ -d "${HOME}/.cur
 detect_opencode()     { command -v opencode >/dev/null 2>&1 || [[ -d "${HOME}/.config/opencode" ]]; }
 detect_aider()        { command -v aider >/dev/null 2>&1; }
 detect_openclaw()     { command -v openclaw >/dev/null 2>&1 || [[ -d "${HOME}/.openclaw" ]]; }
+detect_hermes()       { command -v hermes >/dev/null 2>&1 || [[ -d "${HOME}/.hermes" ]]; }
 detect_windsurf()     { command -v windsurf >/dev/null 2>&1 || [[ -d "${HOME}/.codeium" ]]; }
 detect_qwen()         { command -v qwen >/dev/null 2>&1 || [[ -d "${HOME}/.qwen" ]]; }
 detect_kimi()         { command -v kimi >/dev/null 2>&1; }
@@ -381,6 +384,7 @@ is_detected() {
     gemini-cli)  detect_gemini_cli  ;;
     opencode)    detect_opencode    ;;
     openclaw)    detect_openclaw    ;;
+    hermes)      detect_hermes      ;;
     cursor)      detect_cursor      ;;
     aider)       detect_aider       ;;
     windsurf)    detect_windsurf    ;;
@@ -401,6 +405,7 @@ tool_label() {
     gemini-cli)  printf "%-14s  %s" "Gemini CLI"   "(~/.gemini/agents)"      ;;
     opencode)    printf "%-14s  %s" "OpenCode"     "(opencode.ai)"           ;;
     openclaw)    printf "%-14s  %s" "OpenClaw"     "(~/.openclaw/agency-agents)" ;;
+    hermes)      printf "%-14s  %s" "Hermes"       "(~/.hermes/agency-agents)" ;;
     cursor)      printf "%-14s  %s" "Cursor"       "(.cursor/rules)"         ;;
     aider)       printf "%-14s  %s" "Aider"        "(CONVENTIONS.md)"        ;;
     windsurf)    printf "%-14s  %s" "Windsurf"     "(.windsurfrules)"        ;;
@@ -823,6 +828,178 @@ install_openclaw() {
   fi
 }
 
+# True when agency-agents is listed under skills.external_dirs (not a stray EOF line).
+hermes_external_dir_configured() {
+  local config="$1"
+  [[ -f "$config" ]] || return 1
+  awk '
+    BEGIN { in_ext = 0; found = 0 }
+    /^skills:/ { in_skills = 1; next }
+    in_skills && /^[A-Za-z0-9_.-]+:/ && $0 !~ /^  / { in_skills = 0; in_ext = 0 }
+    in_skills && /^  external_dirs:/ { in_ext = 1; next }
+    in_ext && /^    -.*agency-agents/ { found = 1; exit }
+    in_ext && /^  [A-Za-z0-9_.-]+:/ { in_ext = 0 }
+    END { exit(found ? 0 : 1) }
+  ' "$config" 2>/dev/null
+}
+
+# Insert external_dirs entry under skills: without appending to EOF (avoids breaking YAML).
+hermes_insert_external_dir() {
+  local config="$1"
+  local entry="$2"
+  local tmp
+  tmp="$(mktemp)"
+  awk -v entry="$entry" '
+    BEGIN { in_skills = 0; in_ext = 0; inserted = 0; has_ext = 0 }
+    /^skills:/ { in_skills = 1; print; next }
+    in_skills && /^[A-Za-z0-9_.-]+:/ && $0 !~ /^  / {
+      if (!has_ext && !inserted) {
+        print "  external_dirs:"
+        print "    - " entry
+        inserted = 1
+      }
+      in_skills = 0
+      in_ext = 0
+      print
+      next
+    }
+    in_skills && /^  external_dirs:/ {
+      has_ext = 1
+      in_ext = 1
+      # Hermes often ships external_dirs: [] — replace empty inline list with block list
+      if ($0 ~ /external_dirs:[[:space:]]*\[[[:space:]]*\]/) {
+        print "  external_dirs:"
+        print "    - " entry
+        inserted = 1
+        next
+      }
+      if ($0 ~ /external_dirs:[[:space:]]*$/) {
+        print "  external_dirs:"
+        next
+      }
+      print
+      next
+    }
+    in_ext && /^    -/ {
+      if ($0 ~ /agency-agents/) { inserted = 1 }
+      print
+      next
+    }
+    in_ext && /^  [A-Za-z0-9_.-]+:/ {
+      if (!inserted) {
+        print "    - " entry
+        inserted = 1
+      }
+      in_ext = 0
+      print
+      next
+    }
+    in_ext && /^[^[:space:]]/ {
+      if (!inserted) {
+        print "    - " entry
+        inserted = 1
+      }
+      in_ext = 0
+      print
+      next
+    }
+    { print }
+    END {
+      if (in_skills && !has_ext && !inserted) {
+        print "  external_dirs:"
+        print "    - " entry
+        inserted = 1
+      }
+      if (in_ext && !inserted) {
+        print "    - " entry
+      }
+    }
+  ' "$config" > "$tmp" && mv "$tmp" "$config"
+}
+
+ensure_hermes_external_dir() {
+  local config="${HOME}/.hermes/config.yaml"
+  local entry='~/.hermes/agency-agents'
+  local backup
+
+  mkdir -p "${HOME}/.hermes"
+
+  if [[ -f "$config" ]] && hermes_external_dir_configured "$config"; then
+    return 0
+  fi
+
+  if [[ -f "$config" ]] && grep -qF 'agency-agents' "$config" 2>/dev/null; then
+    err "Hermes: $config mentions agency-agents but not under skills.external_dirs."
+    err "Hermes: invalid example — do not use:"
+    err "Hermes:   external_dirs: []"
+    err "Hermes:     - ~/.hermes/agency-agents"
+    err "Hermes: use block form only (see integrations/hermes/README.md)."
+    return 1
+  fi
+
+  if [[ ! -f "$config" ]]; then
+    cat > "$config" <<'EOF'
+skills:
+  external_dirs:
+    - ~/.hermes/agency-agents
+EOF
+    ok "Hermes: created config.yaml with skills.external_dirs"
+    return 0
+  fi
+
+  if ! grep -q '^skills:' "$config" 2>/dev/null; then
+    warn "Hermes: no skills: section in $config — add manually (do not paste at EOF):"
+    warn "  skills:"
+    warn "    external_dirs:"
+    warn "      - ~/.hermes/agency-agents"
+    return 1
+  fi
+
+  backup="${config}.bak.agency-agents.$$"
+  cp "$config" "$backup"
+  if hermes_insert_external_dir "$config" "$entry"; then
+    if hermes_external_dir_configured "$config"; then
+      ok "Hermes: added $entry under skills.external_dirs (backup: $backup)"
+      return 0
+    fi
+  fi
+  mv "$backup" "$config"
+  err "Hermes: failed to update $config safely. Backup kept at $backup"
+  warn "Hermes: add manually under skills.external_dirs:"
+  warn "    - ~/.hermes/agency-agents"
+  return 1
+}
+
+install_hermes() {
+  local src="$INTEGRATIONS/hermes"
+  local dest="${HOME}/.hermes/agency-agents"
+  local count=0
+  [[ -d "$src" ]] || { err "integrations/hermes missing. Run convert.sh first."; return 1; }
+  mkdir -p "$dest"
+  local d
+  while IFS= read -r -d '' d; do
+    local name; name="$(basename "$d")"
+    [[ -f "$d/SOUL.md" && -f "$d/AGENTS.md" && -f "$d/IDENTITY.md" && -f "$d/SKILL.md" ]] || continue
+    mkdir -p "$dest/$name"
+    cp "$d/SOUL.md" "$dest/$name/SOUL.md"
+    cp "$d/AGENTS.md" "$dest/$name/AGENTS.md"
+    cp "$d/IDENTITY.md" "$dest/$name/IDENTITY.md"
+    cp "$d/SKILL.md" "$dest/$name/SKILL.md"
+    (( count++ )) || true
+  done < <(find "$src" -mindepth 1 -maxdepth 1 -type d -print0)
+  if (( count == 0 )); then
+    err "integrations/hermes contains no generated workspaces. Run ./scripts/convert.sh --tool hermes first."
+    return 1
+  fi
+  if ! ensure_hermes_external_dir; then
+    warn "Hermes: workspaces installed to $dest but config.yaml was not updated."
+  fi
+  ok "Hermes: $count workspaces -> $dest"
+  if command -v hermes >/dev/null 2>&1; then
+    warn "Hermes: run 'hermes skills list' to verify; use /skill-name or --toolsets skills in chat"
+  fi
+}
+
 install_cursor() {
   local src="$INTEGRATIONS/cursor/rules"
   local dest; dest="$(resolve_dest cursor "${PWD}/.cursor/rules")"
@@ -934,6 +1111,7 @@ install_tool() {
     gemini-cli)  install_gemini_cli  ;;
     opencode)    install_opencode    ;;
     openclaw)    install_openclaw    ;;
+    hermes)      install_hermes      ;;
     cursor)      install_cursor      ;;
     aider)       install_aider       ;;
     windsurf)    install_windsurf    ;;

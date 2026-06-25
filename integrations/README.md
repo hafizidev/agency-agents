@@ -11,6 +11,7 @@ supported agentic coding tools.
 - **[Gemini CLI](#gemini-cli)** — `.md` agent files in `gemini-cli/agents/`
 - **[OpenCode](#opencode)** — `.md` agent files in `opencode/`
 - **[OpenClaw](#openclaw)** — `SOUL.md` + `AGENTS.md` + `IDENTITY.md` workspaces
+- **[Hermes](#hermes)** — `SOUL.md` + `AGENTS.md` + `IDENTITY.md` + `SKILL.md` workspaces
 - **[Cursor](#cursor)** — `.mdc` rule files in `cursor/`
 - **[Aider](#aider)** — `CONVENTIONS.md` in `aider/`
 - **[Windsurf](#windsurf)** — `.windsurfrules` in `windsurf/`
@@ -30,6 +31,10 @@ supported agentic coding tools.
 ./scripts/install.sh --tool openclaw
 ./scripts/install.sh --tool claude-code
 ./scripts/install.sh --tool codex
+
+# Hermes needs generated workspaces on a fresh clone
+./scripts/convert.sh --tool hermes
+./scripts/install.sh --tool hermes
 
 # Gemini CLI needs generated integration files on a fresh clone
 ./scripts/convert.sh --tool gemini-cli
@@ -148,6 +153,27 @@ Then install them:
 ```
 
 See [openclaw/README.md](openclaw/README.md) for details.
+
+---
+
+## Hermes
+
+Each agent becomes a Hermes skill workspace (`SKILL.md` plus `SOUL.md`,
+`AGENTS.md`, and `IDENTITY.md`), installed under `~/.hermes/agency-agents/`.
+
+Before installing, generate the workspaces:
+
+```bash
+./scripts/convert.sh --tool hermes
+```
+
+Then install them:
+
+```bash
+./scripts/install.sh --tool hermes
+```
+
+See [hermes/README.md](hermes/README.md) for details.
 
 ---
 
